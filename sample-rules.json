@@ -1,0 +1,7 @@
+{
+  "keywords": ["内部资料", "商业秘密", "仅限内部"],
+  "keyword_mode": "any",
+  "match_name": true,
+  "match_content": true,
+  "case_sensitive": false
+}
