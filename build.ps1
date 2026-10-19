@@ -1,7 +1,12 @@
-param([string]$PythonPath = "")
+param(
+    [string]$PythonPath = "",
+    [ValidateSet("onefile", "portable", "both")][string]$Layout = "both",
+    [string]$OutputDirectory = "dist"
+)
 
 $ErrorActionPreference = "Stop"
 $PreviousPyInstallerConfig = $env:PYINSTALLER_CONFIG_DIR
+$PreviousBuildLayout = $env:SFC_BUILD_LAYOUT
 $env:PYINSTALLER_CONFIG_DIR = Join-Path $PSScriptRoot ".pyinstaller-cache"
 Push-Location $PSScriptRoot
 try {
@@ -37,15 +42,27 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw "Build dependencies are missing. Install them manually: python -m pip install -r requirements.txt"
     }
-    & $PythonExecutable @PythonPrefix -m PyInstaller --noconfirm --clean SensitiveFileChecker.spec
-    if ($LASTEXITCODE -ne 0) {
-        throw "PyInstaller failed with exit code $LASTEXITCODE."
+    $Layouts = if ($Layout -eq "both") { @("onefile", "portable") } else { @($Layout) }
+    foreach ($CurrentLayout in $Layouts) {
+        $env:SFC_BUILD_LAYOUT = $CurrentLayout
+        & $PythonExecutable @PythonPrefix -m PyInstaller --noconfirm --clean --workpath "build\$CurrentLayout" --distpath $OutputDirectory SensitiveFileChecker.spec
+        if ($LASTEXITCODE -ne 0) {
+            throw "PyInstaller $CurrentLayout build failed with exit code $LASTEXITCODE."
+        }
     }
-    if (-not (Test-Path -LiteralPath "dist\SensitiveFileChecker.exe" -PathType Leaf)) {
-        throw "PyInstaller finished without producing dist\SensitiveFileChecker.exe."
+    if ($Layout -ne "portable" -and -not (Test-Path -LiteralPath (Join-Path $OutputDirectory "SensitiveFileChecker.exe") -PathType Leaf)) {
+        throw "PyInstaller finished without producing SensitiveFileChecker.exe."
     }
-    Write-Host "Build completed: $PSScriptRoot\dist\SensitiveFileChecker.exe"
+    if ($Layout -ne "onefile") {
+        $PortableRoot = Join-Path $OutputDirectory "SensitiveFileChecker-portable"
+        if (-not (Test-Path -LiteralPath (Join-Path $PortableRoot "SensitiveFileChecker.exe") -PathType Leaf)) {
+            throw "Portable executable was not produced."
+        }
+        Copy-Item -LiteralPath "diagnose.ps1", "diagnose.cmd", "README.md", "sample-rules.json" -Destination $PortableRoot -Force
+    }
+    Write-Host "Build completed. Layout: $Layout; output: $OutputDirectory"
 } finally {
     Pop-Location
     $env:PYINSTALLER_CONFIG_DIR = $PreviousPyInstallerConfig
+    $env:SFC_BUILD_LAYOUT = $PreviousBuildLayout
 }

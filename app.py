@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
 
 from scanner import FileResult, Match, ScanConfig, ScanControl, ScanSummary, run_scan
 from reports import export_report
+from version import APP_VERSION
 
 
 FILE_GROUPS = (
@@ -222,7 +223,7 @@ class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.setObjectName("App")
-        self.setWindowTitle("敏感资料检查")
+        self.setWindowTitle("敏感资料检查 v" + APP_VERSION)
         self.setWindowIcon(make_icon())
         self.resize(1380, 930)
         self.setMinimumSize(1060, 710)
@@ -986,6 +987,7 @@ def main():
                 QFontDatabase.addApplicationFont(str(font_dir / font_file))
     app.setFont(QFont("Microsoft YaHei UI", 10))
     app.setApplicationName("敏感资料检查")
+    app.setApplicationVersion(APP_VERSION)
     app.setStyle(InspectorStyle())
     app.setStyleSheet(STYLE)
     window = MainWindow()

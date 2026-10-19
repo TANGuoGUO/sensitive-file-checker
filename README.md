@@ -17,7 +17,7 @@
 
 ## 使用
 
-从 Releases 下载 `SensitiveFileChecker.exe` 后双击运行，无需安装 Python。添加检查目录，输入关键词，选择文件名 / 内容、任一 / 全部关键词、文件类型和其他范围设置，然后开始检查。检查过程中可以暂停、继续或停止；停止后的结果只包含已处理文件，不代表整个目录检查完成。
+从 Releases 下载 `SensitiveFileChecker.exe` 后双击运行，无需安装 Python。也可下载便携版 ZIP，将整个文件夹解压后运行其中的 EXE；便携版的 `_internal` 目录必须与 EXE 一起保留，不能只复制 EXE。添加检查目录，输入关键词，选择文件名 / 内容、任一 / 全部关键词、文件类型和其他范围设置，然后开始检查。检查过程中可以暂停、继续或停止；停止后的结果只包含已处理文件，不代表整个目录检查完成。
 
 关键词按字面文本匹配，每行一个。当同时选择文件名与内容时，两个位置的命中会合并：“全部关键词”要求每个关键词在同一文件的文件名或可提取内容中至少出现一次。可导入仓库中的 `sample-rules.json` 作为规则示例。
 
@@ -31,7 +31,7 @@
 
 ## 开发运行与打包
 
-需要 Windows 10 / 11、Python 3.9 或更高版本。开发运行：
+当前发布版本适用于 **Windows 10 1809（build 17763）及以上的 64 位系统或 Windows 11 x64**；不适用于 Windows 7 / 8 或 32 位 Windows。此要求来自 [Qt 6.10 官方支持平台](https://doc.qt.io/qt-6.10/supported-platforms.html)。开发运行还需要 Python 3.9 或更高版本：
 
 ```powershell
 git clone https://github.com/TANGuoGUO/sensitive-file-checker.git
@@ -39,7 +39,7 @@ cd sensitive-file-checker
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
-python app.py
+python launcher.py
 ```
 
 构建独立 EXE：
@@ -48,7 +48,7 @@ python app.py
 powershell -ExecutionPolicy Bypass -File .\build.ps1
 ```
 
-可用 `-PythonPath C:\路径\python.exe` 指定 Python。脚本自动寻找可用 Python、检查依赖，失败即停止；不会自动联网安装依赖。生成文件为 `dist\SensitiveFileChecker.exe`，首次启动需等待单文件程序解包。
+可用 `-PythonPath C:\路径\python.exe` 指定 Python，`-Layout onefile` 或 `-Layout portable` 单独构建一种布局，默认两者都构建。建议在独立虚拟环境中安装依赖后打包。脚本自动寻找可用 Python、检查依赖，失败即停止；不会自动联网安装依赖。单文件产物为 `dist\SensitiveFileChecker.exe`；便携版为 `dist\SensitiveFileChecker-portable\`。首次启动单文件版需等待临时解包。
 
 运行测试：
 
@@ -65,7 +65,29 @@ python -m pytest tests -q
 .\dist\SensitiveFileChecker.exe --smoke-test smoke-result.json
 ```
 
-当前验证：41 项自动测试通过；打包 EXE 启动、人工文本/PDF 命中和加密 PDF 异常处理自检通过。旧版 Office 自动化分支已用模拟测试验证，尚未进行真实 Microsoft Office 读取实测。
+当前验证：51 项自动测试通过；真实 Windows 平台 Qt 启动探测，以及人工文本/PDF 命中和加密 PDF 异常处理自检通过。旧版 Office 自动化分支已用模拟测试验证，尚未进行真实 Microsoft Office 读取实测。
+
+## 启动失败排查
+
+出现 `Could not load PyInstaller's embedded PKG archive`，表示启动器无法读取 EXE 内的程序归档，尚未进入 Python / Qt，不等同于缺少运行库。
+
+1. 从 Releases 重新下载完整 ZIP，解压到普通本地目录。保留便携版的整个目录结构。
+2. 双击包中的 `diagnose.cmd`。不需要安装 Python；会在 `diagnostic-...` 文件夹保存系统版本、EXE 哈希、启动错误和诊断结果，不扫描办公文件，不安装组件，不联网或上传日志。
+3. 将文件 SHA-256 与同一版本的 `SHA256SUMS.txt` 比较。不同表示文件与发行版不一致，应检查下载或传输完整性；相同仍报错，则需结合启动日志、文件访问权限和企业安全软件的事件记录定位，不能单凭报错认定文件损坏。
+
+手动校验示例（文件改名不改变 SHA-256）：
+
+```powershell
+Get-FileHash .\SensitiveFileChecker.exe -Algorithm SHA256
+```
+
+也可以直接运行启动诊断：
+
+```powershell
+.\SensitiveFileChecker.exe --diagnostics --output .\diagnostic-output
+```
+
+若启动器本身已经因归档损坏或访问受限而退出，程序内的诊断参数也无法执行；这时使用外部 `diagnose.cmd`，它仍能记录文件校验和启动错误。日志仅保存在本机，确认后可将报告交给维护者分析。
 
 ## 检查边界
 
@@ -79,10 +101,12 @@ python -m pytest tests -q
 | 文件 | 用途 |
 | --- | --- |
 | `app.py` | PySide6 界面、后台任务与交互 |
+| `launcher.py`、`diagnostics.py` | GUI 导入前的启动层与系统/Qt 诊断 |
 | `scanner.py` | 目录遍历、关键词匹配、暂停停止与统计 |
 | `extractors.py` | Office / PDF / 文本读取与覆盖状态 |
 | `reports.py` | JSON / CSV 报告导出 |
 | `tests/` | 人工文件与模拟场景测试 |
-| `build.ps1`、`SensitiveFileChecker.spec` | Windows 单文件 EXE 构建 |
+| `build.ps1`、`SensitiveFileChecker.spec` | Windows 单文件 EXE / 便携文件夹构建 |
+| `diagnose.cmd`、`diagnose.ps1` | 无需 Python 的外部启动与文件校验诊断 |
 
 `assets/ui-concept.png` 为生图设计稿，`assets/implemented-exe-ui.png` 为实际程序界面（虚构示例数据）。设计使用内置 imagegen，提示词保存在 `assets/ui-design-prompt.txt`。依赖通过 `requirements.txt` 安装，构建缓存、临时检查报告和依赖安装目录不纳入仓库。

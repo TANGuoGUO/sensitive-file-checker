@@ -3,6 +3,10 @@ __pycache__/
 .pytest_cache/
 .pyinstaller-cache/
 .venv/
+.build-env/
+diagnostic-*/
+diagnostic-output/
+artifacts/
 venv/
 vendor/
 build/
