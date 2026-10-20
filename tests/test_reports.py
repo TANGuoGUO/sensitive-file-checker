@@ -1,5 +1,6 @@
 import csv
 import json
+import os
 import tempfile
 import unittest
 from dataclasses import dataclass, field
@@ -8,7 +9,7 @@ from pathlib import Path
 from typing import List, Tuple
 from unittest.mock import patch
 
-from reports import export_report
+from reports import export_report, export_selected_report, validate_report_destination
 
 
 @dataclass
@@ -123,6 +124,85 @@ class ReportsTests(unittest.TestCase):
     def test_unsupported_extension_is_rejected(self):
         with self.assertRaises(ValueError):
             export_report(str(self.directory / "report.xlsx"), Config(), Summary(), [], [])
+
+    def test_selected_json_marks_subset_and_keeps_original_task_summary(self):
+        destination = self.directory / "selected.json"
+        original_summary = Summary(processed=12, matched=7)
+        export_selected_report(str(destination), Config(), original_summary, [self.result], self.warnings, 12)
+        data = json.loads(destination.read_text(encoding="utf-8"))
+        self.assertEqual(data["export_scope"], {"kind": "selected", "count": 1, "total_result_count": 12})
+        self.assertEqual(data["summary"]["processed"], 12)
+        self.assertEqual(data["summary"]["matched"], 7)
+        self.assertEqual(len(data["results"]), 1)
+        self.assertEqual(data["warnings"], self.warnings)
+        self.assertEqual(original_summary.processed, 12)
+
+    def test_selected_csv_task_row_contains_export_scope(self):
+        destination = self.directory / "selected.csv"
+        export_selected_report(str(destination), Config(), Summary(processed=12), [self.result], [], 12)
+        with destination.open(encoding="utf-8-sig", newline="") as handle:
+            rows = list(csv.DictReader(handle))
+        task = next(row for row in rows if row["记录类型"] == "TASK")
+        details = json.loads(task["详细数据"])
+        self.assertEqual(details["export_scope"], {"kind": "selected", "count": 1, "total_result_count": 12})
+        self.assertEqual(json.loads(task["任务摘要"])["processed"], 12)
+
+    def test_all_export_output_remains_without_selection_scope(self):
+        destination = self.directory / "all.json"
+        export_report(str(destination), Config(), Summary(), [self.result], [])
+        self.assertNotIn("export_scope", json.loads(destination.read_text(encoding="utf-8")))
+
+    def test_invalid_selection_metadata_preserves_existing_report(self):
+        destination = self.directory / "existing.json"
+        destination.write_text("original", encoding="utf-8")
+        for total in (-1, 0, True, "12"):
+            with self.assertRaises(ValueError):
+                export_selected_report(str(destination), Config(), Summary(), [self.result], [], total)
+        self.assertEqual(destination.read_text(encoding="utf-8"), "original")
+
+    def test_report_cannot_overwrite_an_original_csv_file(self):
+        original = self.directory / "原始资料.csv"
+        original.write_text("人工原始资料,必须保留", encoding="utf-8")
+        record = FileResult(path=str(original))
+        with self.assertRaisesRegex(ValueError, "不能覆盖"):
+            export_report(str(original), Config(), Summary(), [record], [])
+        with self.assertRaisesRegex(ValueError, "不能覆盖"):
+            export_selected_report(str(original), Config(), Summary(), [record], [], 12)
+        self.assertEqual(original.read_text(encoding="utf-8"), "人工原始资料,必须保留")
+
+    def test_destination_helper_protects_all_scan_files_outside_selected_subset(self):
+        unselected = self.directory / "未选中的资料.json"
+        unselected.write_text("artificial original", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "不能覆盖"):
+            validate_report_destination(str(unselected), [str(unselected)])
+        self.assertEqual(unselected.read_text(encoding="utf-8"), "artificial original")
+
+    def test_destination_aliases_are_rejected(self):
+        original = self.directory / "original.csv"
+        original.write_text("artificial original", encoding="utf-8")
+        spelling_alias = self.directory / "other" / ".." / original.name
+        with self.assertRaisesRegex(ValueError, "不能覆盖"):
+            validate_report_destination(str(spelling_alias), [str(original)])
+        if os.name == "nt":
+            with self.assertRaisesRegex(ValueError, "不能覆盖"):
+                validate_report_destination(str(original).upper(), [str(original)])
+
+    def test_samefile_catches_existing_hardlink_alias(self):
+        original = self.directory / "original.csv"
+        alias = self.directory / "alias.csv"
+        original.write_text("artificial original", encoding="utf-8")
+        try:
+            os.link(str(original), str(alias))
+        except OSError:
+            self.skipTest("Filesystem does not allow hardlink fixtures")
+        with self.assertRaisesRegex(ValueError, "不能覆盖"):
+            validate_report_destination(str(alias), [str(original)])
+        self.assertEqual(original.read_text(encoding="utf-8"), "artificial original")
+
+    def test_new_report_destination_is_allowed_without_creating_file(self):
+        destination = self.directory / "new-report.json"
+        validate_report_destination(str(destination), [str(self.directory / "missing-original.csv")])
+        self.assertFalse(destination.exists())
 
 
 if __name__ == "__main__":

@@ -78,6 +78,40 @@ def _modified_at(value: Any) -> str:
     return "" if not value else str(value)
 
 
+def validate_report_destination(path: str, protected_paths: Sequence[str]) -> None:
+    """Reject a report destination that would replace an original scan file.
+
+    Normalized resolved paths catch spelling/case/link aliases; samefile also
+    catches distinct existing names that refer to the same filesystem file.
+    The helper only reads path metadata and never creates an output file.
+    """
+    try:
+        destination = Path(path).expanduser().resolve()
+        destination_key = os.path.normcase(str(destination))
+        for original in protected_paths:
+            if not original:
+                continue
+            try:
+                source = Path(original).expanduser().resolve()
+            except (OSError, RuntimeError):
+                # A failed file result can contain a malformed/inaccessible
+                # original name. Keep its literal absolute name protected
+                # without preventing export to an unrelated valid location.
+                source = Path(os.path.abspath(os.path.expanduser(str(original))))
+            is_original = destination_key == os.path.normcase(str(source))
+            if not is_original:
+                try:
+                    is_original = os.path.samefile(str(destination), str(source))
+                except OSError:
+                    # New report names and disappeared source files have no
+                    # identity to compare; normalized path protection remains.
+                    pass
+            if is_original:
+                raise ValueError("报告不能覆盖本次检查的原始文件，请选择其他保存位置。")
+    except (OSError, RuntimeError) as exc:
+        raise ValueError("无法确认报告保存路径，请选择其他保存位置。") from exc
+
+
 def _file_row(result: Mapping) -> dict:
     path = str(result.get("path", ""))
     matches = [match for match in result.get("matches", []) if isinstance(match, Mapping)]
@@ -118,18 +152,21 @@ def _write_csv(handle: Any, payload: Mapping) -> None:
     config = payload["config"]
     summary = payload["summary"]
     rules = {key: value for key, value in config.items() if key != "roots"}
+    task_details = {
+        "format_version": payload["format_version"],
+        "generated_at": payload["generated_at"],
+        "config": config,
+        "summary": summary,
+    }
+    if "export_scope" in payload:
+        task_details["export_scope"] = payload["export_scope"]
     write({
         "记录类型": "TASK",
         "任务状态": summary.get("state", ""),
         "检查范围": _lines(config.get("roots", [])),
         "检查规则": _compact(rules),
         "任务摘要": _compact(summary),
-        "详细数据": _compact({
-            "format_version": payload["format_version"],
-            "generated_at": payload["generated_at"],
-            "config": config,
-            "summary": summary,
-        }),
+        "详细数据": _compact(task_details),
     })
     for warning in payload["warnings"]:
         write({
@@ -142,12 +179,14 @@ def _write_csv(handle: Any, payload: Mapping) -> None:
 
 
 def export_report(path: str, config: Any, summary: Any,
-                  results: Sequence[Any], warnings: Sequence[dict]) -> None:
+                  results: Sequence[Any], warnings: Sequence[dict], *, selection=None) -> None:
     """Save a complete JSON report or a UTF-8-BOM CSV results table.
 
     CSV uses FILE, TASK and WARNING record types. Its task row remains present
     even when no files were processed, so errors or a stopped scan are visible.
     An atomic replacement leaves an existing report intact if writing fails.
+    ``selection`` optionally identifies a selected subset without changing the
+    original scan summary. Omit it for the original complete-report behavior.
     """
     destination = Path(path)
     extension = destination.suffix.lower()
@@ -163,6 +202,19 @@ def export_report(path: str, config: Any, summary: Any,
     }
     if not isinstance(payload["config"], dict) or not isinstance(payload["summary"], dict):
         raise TypeError("config and summary must be dataclasses or mappings")
+    if selection is not None:
+        scope = _plain(selection)
+        count = len(payload["results"])
+        if not isinstance(scope, dict) or scope.get("kind") != "selected":
+            raise ValueError("所选导出范围必须包含 kind='selected'。")
+        total = scope.get("total_result_count")
+        if isinstance(total, bool) or not isinstance(total, int) or total < count:
+            raise ValueError("全部结果数量必须为不小于所选结果数量的整数。")
+        if "count" in scope and scope["count"] != count:
+            raise ValueError("所选结果数量与实际导出数量不一致。")
+        scope["count"] = count
+        payload["export_scope"] = scope
+    validate_report_destination(path, [result.get("path", "") for result in payload["results"]])
     temp_path = None
     try:
         with tempfile.NamedTemporaryFile(
@@ -185,3 +237,13 @@ def export_report(path: str, config: Any, summary: Any,
                 os.unlink(temp_path)
             except FileNotFoundError:
                 pass
+
+
+def export_selected_report(path: str, config: Any, summary: Any,
+                           results: Sequence[Any], warnings: Sequence[dict],
+                           total_results_count: int) -> None:
+    """Export selected file results while preserving full task statistics."""
+    export_report(path, config, summary, results, warnings, selection={
+        "kind": "selected",
+        "total_result_count": total_results_count,
+    })

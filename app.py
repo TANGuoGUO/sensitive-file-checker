@@ -1,4 +1,4 @@
-"""本地敏感资料检查工具。GUI 不访问网络，也不修改被检查文件。"""
+"""本地敏感资料检查工具。扫描只读，文件处理由用户明确选择。"""
 from __future__ import annotations
 
 import argparse
@@ -197,14 +197,18 @@ class InspectorStyle(QProxyStyle):
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         checked = bool(option.state & QStyle.StateFlag.State_On)
+        mixed = checkbox and bool(option.state & QStyle.StateFlag.State_NoChange)
         enabled = bool(option.state & QStyle.StateFlag.State_Enabled)
         color = QColor("#1769e8" if enabled else "#9db1cd")
         rect = option.rect.adjusted(1, 1, -1, -1)
-        painter.setPen(QPen(color if checked else QColor("#8c9db4"), 1.3))
-        painter.setBrush(color if checked and checkbox else QColor("#ffffff"))
+        painter.setPen(QPen(color if checked or mixed else QColor("#8c9db4"), 1.3))
+        painter.setBrush(color if (checked or mixed) and checkbox else QColor("#ffffff"))
         if checkbox:
             painter.drawRoundedRect(rect, 2, 2)
-            if checked:
+            if mixed:
+                painter.setPen(QPen(QColor("#ffffff"), 1.8))
+                painter.drawLine(rect.left() + 3, rect.center().y(), rect.right() - 3, rect.center().y())
+            elif checked:
                 painter.setPen(QPen(QColor("#ffffff"), 1.8))
                 painter.drawLine(rect.left() + 3, rect.center().y(), rect.center().x() - 1, rect.bottom() - 3)
                 painter.drawLine(rect.center().x() - 1, rect.bottom() - 3, rect.right() - 2, rect.top() + 3)
@@ -240,6 +244,8 @@ class MainWindow(QWidget):
         self.closing = False
         self.demo = False
         self.started = 0
+        self._scan_in_progress = False
+        self.batch_selection_by_tab = {0: [], 1: []}
         self._build()
         self.filter_timer = QTimer(self)
         self.filter_timer.setSingleShot(True)
@@ -269,7 +275,7 @@ class MainWindow(QWidget):
         h.addLayout(title_layout)
         h.addSpacing(15)
         h.addWidget(label("本地处理", "Badge"))
-        h.addWidget(label("只读检查", "BadgeBlue"))
+        h.addWidget(label("扫描只读", "BadgeBlue"))
         h.addStretch()
         self.pause_btn = QPushButton("暂停")
         self.pause_btn.clicked.connect(self.toggle_pause)
@@ -449,6 +455,10 @@ class MainWindow(QWidget):
         self.demo_label.hide()
         result_header.addWidget(self.demo_label)
         result_header.addStretch()
+        self.batch_button = QPushButton("批量处理")
+        self.batch_button.setEnabled(False)
+        self.batch_button.clicked.connect(self.open_batch_dialog)
+        result_header.addWidget(self.batch_button)
         self.export_btn = QPushButton("导出报告")
         self.export_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton))
         self.export_btn.clicked.connect(self.export_results)
@@ -634,6 +644,7 @@ class MainWindow(QWidget):
         self.warnings = []
         self.summary = ScanSummary()
         self.active_config = config
+        self.batch_selection_by_tab = {0: [], 1: []}
         self.table.setRowCount(0)
         self.search.clear()
         self.clear_detail()
@@ -650,6 +661,7 @@ class MainWindow(QWidget):
         self.elapsed_timer.start()
 
     def set_running(self, running):
+        self._scan_in_progress = running
         self.settings_frame.setEnabled(not running)
         self.start_btn.setEnabled(not running)
         self.start_btn.setText("正在检查…" if running else "开始检查")
@@ -659,6 +671,7 @@ class MainWindow(QWidget):
         self.pause_btn.setEnabled(True)
         self.stop_btn.setEnabled(True)
         self.export_btn.setEnabled(not running and self.active_config is not None)
+        self.update_batch_button()
 
     def toggle_pause(self):
         if not self.control:
@@ -814,6 +827,46 @@ class MainWindow(QWidget):
             self.table.selectRow(selected_row if selected_row is not None else 0)
         else:
             self.clear_detail()
+        self.update_batch_button()
+
+    def batch_records(self):
+        """Only actual file results belong in a file-operation selection."""
+        if self.tabs.currentIndex() == 0:
+            return [record for record in self.results if record.matched]
+        return [record for record in self.results if record.content_status in ("partial", "unreadable")]
+
+    def update_batch_button(self):
+        self.batch_button.setEnabled(
+            not self._scan_in_progress and self.active_config is not None and bool(self.batch_records())
+        )
+
+    def create_batch_dialog(self):
+        if self._scan_in_progress or self.active_config is None:
+            return None
+        records = self.batch_records()
+        if not records:
+            return None
+        from batch_dialog import BatchSelectionDialog
+        dialog = BatchSelectionDialog(
+            records, self.active_config, self.summary, self.warnings,
+            demo=self.demo,
+            initially_selected=self.batch_selection_by_tab.get(self.tabs.currentIndex(), ()),
+            file_delegate_cls=FileDelegate, parent=self,
+            protected_paths=[record.path for record in self.results],
+        )
+        dialog.search.setText(self.search.text())
+        return dialog
+
+    def open_batch_dialog(self):
+        dialog = self.create_batch_dialog()
+        if dialog is None:
+            return
+        tab_index = self.tabs.currentIndex()
+        try:
+            dialog.exec()
+        finally:
+            self.batch_selection_by_tab[tab_index] = dialog.selected_paths()
+            dialog.deleteLater()
 
     def clear_detail(self):
         self.current_record = None
@@ -930,6 +983,8 @@ class MainWindow(QWidget):
             QMessageBox.warning(self, "导入失败", str(exc))
 
     def load_demo(self):
+        self.batch_selection_by_tab = {0: [], 1: []}
+        self._scan_in_progress = False
         self.demo = True
         self.demo_label.show()
         self.roots.addItems([r"C:\Users\Office\Documents", r"D:\项目资料"])
@@ -943,6 +998,8 @@ class MainWindow(QWidget):
             FileResult(path=r"D:\项目资料\历史归档.doc", content_status="unreadable", issues=["未启用旧版 Office 兼容读取。"]),
             FileResult(path=r"D:\项目资料\培训讲义.pdf", content_status="partial", issues=["文件含图片，图片文字未做 OCR。"]),
         ]
+        for record, size in zip(self.results, (2516582, 435814, 5976883, 1887437, 204800, 98560, 618496)):
+            record.size = size
         self.summary = ScanSummary(state="completed", discovered=128, processed=128, matched=4, content_complete=125, content_partial=1, content_unreadable=2, total=128)
         self.update_summary()
         self.progress.setRange(0, 100)
@@ -973,9 +1030,10 @@ def main():
     parser = argparse.ArgumentParser(description="敏感资料检查")
     parser.add_argument("--demo", action="store_true", help="展示虚构结果，不扫描本机")
     parser.add_argument("--screenshot", help="将界面截图保存到指定 PNG 后退出")
+    parser.add_argument("--batch-screenshot", help="保存使用虚构示例数据的批量选择弹窗截图后退出")
     parser.add_argument("--smoke-test", help="使用临时人工测试文本检查打包程序，并写出 JSON")
     args = parser.parse_args()
-    if args.screenshot or args.smoke_test:
+    if args.screenshot or args.batch_screenshot or args.smoke_test:
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     app = QApplication(sys.argv[:1])
     # Qt's offscreen plugin does not enumerate Windows fonts. Register system
@@ -991,7 +1049,7 @@ def main():
     app.setStyle(InspectorStyle())
     app.setStyleSheet(STYLE)
     window = MainWindow()
-    if args.demo:
+    if args.demo or args.batch_screenshot:
         window.load_demo()
     window.show()
     fixture = None
@@ -1017,7 +1075,27 @@ def main():
         window.keywords.setPlainText("内部资料\nALPHA")
 
         def finish_smoke():
-            smoke_result.update({"ok": window.summary.state == "completed" and window.summary.processed == 3 and window.summary.matched == 2 and window.summary.content_unreadable == 1 and window.table.rowCount() == 2, "summary": asdict(window.summary), "pdf_library": pypdf.__version__, "gui_rows": window.table.rowCount(), "results": [asdict(r) for r in window.results]})
+            from reports import export_selected_report
+            from file_clipboard import cut_files_to_clipboard
+
+            class TestClipboard:
+                def setMimeData(self, data):
+                    self.data = data
+
+            matched = window.batch_records()
+            window.batch_selection_by_tab[0] = [matched[0].path] if matched else []
+            dialog = window.create_batch_dialog()
+            selected = dialog.selected_records() if dialog else []
+            report_path = Path(fixture.name, "selected-report.json")
+            export_selected_report(report_path, window.active_config, window.summary, selected, window.warnings, len(matched))
+            subset = json.loads(report_path.read_text(encoding="utf-8"))
+            clipboard = TestClipboard()
+            count = cut_files_to_clipboard([record.path for record in selected], clipboard=clipboard)
+            batch_ok = (len(selected) == count == 1 and len(clipboard.data.urls()) == 1
+                        and subset["export_scope"]["kind"] == "selected"
+                        and len(subset["results"]) == 1
+                        and all(Path(record.path).is_file() for record in window.results))
+            smoke_result.update({"ok": window.summary.state == "completed" and window.summary.processed == 3 and window.summary.matched == 2 and window.summary.content_unreadable == 1 and window.table.rowCount() == 2 and batch_ok, "batch_selection": batch_ok, "summary": asdict(window.summary), "pdf_library": pypdf.__version__, "gui_rows": window.table.rowCount(), "results": [asdict(r) for r in window.results]})
             Path(args.smoke_test).write_text(json.dumps(smoke_result, ensure_ascii=False, indent=2), encoding="utf-8")
             app.exit(0 if smoke_result["ok"] else 1)
 
@@ -1027,6 +1105,16 @@ def main():
 
         QTimer.singleShot(100, start_smoke)
         QTimer.singleShot(45000, lambda: (Path(args.smoke_test).write_text(json.dumps({"ok": False, "error": "timeout"}), encoding="utf-8"), app.exit(2)) if not smoke_result["ok"] else None)
+    elif args.batch_screenshot:
+        window.batch_selection_by_tab[0] = [record.path for record in window.batch_records()[:3]]
+        batch_preview = window.create_batch_dialog()
+        batch_preview.open()
+
+        def save_batch_screenshot():
+            destination = Path(args.batch_screenshot)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            app.exit(0 if batch_preview.grab().save(str(destination)) else 1)
+        QTimer.singleShot(600, save_batch_screenshot)
     elif args.screenshot:
         def save_screenshot():
             destination = Path(args.screenshot)
