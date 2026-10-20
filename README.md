@@ -11,6 +11,7 @@
 - 多文件夹扫描、包含子文件夹、排除目录、文件类型和文件大小筛选。
 - 文件名与内容可独立检查；支持任一 / 全部关键词、大小写选项、规则导入与保存。
 - Word 段落、Excel 单元格、PPT 幻灯片及备注、PDF 页码等命中定位和原文高亮。
+- 包含 PDF AES 解密依赖，可读取无需打开密码的 AES-128 / AES-256 PDF；需要打开密码的文件会记录为内容未检查。
 - 后台检查、暂停、继续、停止；读取失败与内容覆盖不完整的文件单独展示。
 - CSV 和 JSON 报告，包含检查范围、规则、结果、任务状态和异常记录。
 - 批量选择弹窗：搜索、类型筛选、逐项勾选、Shift 连选和当前列表全选；导出所选报告或将文件剪切到 Windows 剪贴板。
@@ -56,7 +57,9 @@ python launcher.py
 powershell -ExecutionPolicy Bypass -File .\build.ps1
 ```
 
-可用 `-PythonPath C:\路径\python.exe` 指定 Python，`-Layout onefile` 或 `-Layout portable` 单独构建一种布局，默认两者都构建。建议在独立虚拟环境中安装依赖后打包。脚本自动寻找可用 Python、检查依赖，失败即停止；不会自动联网安装依赖。单文件产物为 `dist\SensitiveFileChecker.exe`；便携版为 `dist\SensitiveFileChecker-portable\`。首次启动单文件版需等待临时解包。
+可用 `-PythonPath C:\路径\python.exe` 指定 Python，`-Layout onefile` 或 `-Layout portable` 单独构建一种布局，默认两者都构建。建议在独立虚拟环境中安装依赖后打包。脚本自动寻找可用 Python、检查依赖，失败即停止；不会自动联网安装依赖。构建前会实际生成 AES-128 / AES-256 人工 PDF，并解密读取文字，防止遗漏解密后端。单文件产物为 `dist\SensitiveFileChecker.exe`；便携版为 `dist\SensitiveFileChecker-portable\`。首次启动单文件版需等待临时解包。
+
+`requirements.txt` 使用 `pypdf[crypto]` 并固定 `cryptography` 版本，按 [pypdf 官方安装说明](https://pypdf.readthedocs.io/en/6.21.1/user/installation.html) 包含 AES 支持。更换打包环境时应重新安装完整依赖并运行构建前检查。
 
 运行测试：
 
@@ -65,7 +68,7 @@ python -m pip install -r requirements-dev.txt
 python -m pytest tests -q
 ```
 
-`--demo` 只展示虚构界面数据；正常启动不会自动扫描任何目录。`--batch-screenshot 界面.png` 可保存示例批量弹窗截图。`--smoke-test 检查结果.json` 使用自动创建的人工文本、PDF 和加密 PDF 验证扫描、批量选择、所选报告与剪贴板数据格式，不读取用户办公文件，也不改系统剪贴板。
+`--demo` 只展示虚构界面数据；正常启动不会自动扫描任何目录。`--batch-screenshot 界面.png` 可保存示例批量弹窗截图。`--smoke-test 检查结果.json` 使用自动创建的人工文本、普通 PDF、空密码 AES-128 / AES-256 PDF 和需要密码的 RC4 / AES PDF 验证扫描、批量选择、所选报告与剪贴板数据格式，不读取用户办公文件，也不改系统剪贴板。报告中的 `aes_pdf`、`pdf_checks` 与 `crypto_provider` 显示 AES 自检结果及实际后端。
 
 独立验证打包后的程序：
 
@@ -73,7 +76,7 @@ python -m pytest tests -q
 .\dist\SensitiveFileChecker.exe --smoke-test smoke-result.json
 ```
 
-当前验证：92 项自动测试通过；真实 Windows 平台 Qt 启动探测，以及人工文本/PDF 命中、加密 PDF 异常处理、批量选择与所选导出自检通过。剪切测试使用模拟剪贴板，验证文件 URL 与 Windows MOVE 标记，未实际粘贴移动文件。旧版 Office 自动化分支已用模拟测试验证，尚未进行真实 Microsoft Office 读取实测。
+当前验证：104 项自动测试通过；真实 Windows 平台 Qt 启动探测，以及人工文本/PDF 命中、AES-128 / AES-256 空密码 PDF 读取、需要密码的 PDF 异常处理、批量选择与所选导出自检通过。剪切测试使用模拟剪贴板，验证文件 URL 与 Windows MOVE 标记，未实际粘贴移动文件。旧版 Office 自动化分支已用模拟测试验证，尚未进行真实 Microsoft Office 读取实测。
 
 ## 启动失败排查
 
@@ -116,6 +119,7 @@ Get-FileHash .\SensitiveFileChecker.exe -Algorithm SHA256
 | `reports.py` | JSON / CSV 报告导出 |
 | `tests/` | 人工文件与模拟场景测试 |
 | `build.ps1`、`SensitiveFileChecker.spec` | Windows 单文件 EXE / 便携文件夹构建 |
+| `check_build_dependencies.py` | 构建前依赖检查与实际 AES PDF 文字往返验证 |
 | `diagnose.cmd`、`diagnose.ps1` | 无需 Python 的外部启动与文件校验诊断 |
 
 `assets/ui-concept.png` 为生图设计稿，`assets/implemented-exe-ui.png` 为实际程序界面（虚构示例数据）。设计使用内置 imagegen，提示词保存在 `assets/ui-design-prompt.txt`。依赖通过 `requirements.txt` 安装，构建缓存、临时检查报告和依赖安装目录不纳入仓库。

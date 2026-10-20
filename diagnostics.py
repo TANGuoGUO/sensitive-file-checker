@@ -143,7 +143,7 @@ def collect_report(include_icu=False):
         windows = sys.getwindowsversion()
         system["windows"] = {"major": windows.major, "minor": windows.minor, "build": windows.build}
     versions = {"application": app_version(), "python": platform.python_version()}
-    for package in ("PySide6", "shiboken6", "pypdf"):
+    for package in ("PySide6", "shiboken6", "pypdf", "cryptography"):
         try:
             versions[package] = importlib.metadata.version(package)
         except importlib.metadata.PackageNotFoundError:

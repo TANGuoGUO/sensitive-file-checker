@@ -1,4 +1,5 @@
 PySide6==6.10.3
-pypdf==6.21.1
+pypdf[crypto]==6.21.1
+cryptography==50.0.2
 pywin32==311; sys_platform == "win32"
 PyInstaller==6.22.3

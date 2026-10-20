@@ -1026,6 +1026,50 @@ class MainWindow(QWidget):
         event.accept()
 
 
+_SMOKE_PDF_CASES = (
+    ("plain_pdf", "人工测试.pdf", None, "", True),
+    ("rc4_password_protected", "加密测试.pdf", "RC4-128", "artificial-test-password", False),
+    ("aes128_empty_password", "AES128_空密码.pdf", "AES-128", "", True),
+    ("aes256_empty_password", "AES256_空密码.pdf", "AES-256", "", True),
+    ("aes256_password_protected", "AES256_需密码.pdf", "AES-256", "artificial-test-password", False),
+)
+
+
+def _create_smoke_fixtures(directory):
+    """Create only artificial test documents, including explicit AES cases."""
+    import pypdf
+    from pypdf.generic import DictionaryObject, NameObject, DecodedStreamObject
+
+    root = Path(directory)
+    Path(root, "人工测试.txt").write_text("这是一份人工生成的内部资料测试文件。", encoding="utf-8")
+    for _key, filename, algorithm, password, _readable in _SMOKE_PDF_CASES:
+        pdf = pypdf.PdfWriter()
+        page = pdf.add_blank_page(width=300, height=300)
+        font = DictionaryObject({NameObject("/Type"): NameObject("/Font"), NameObject("/Subtype"): NameObject("/Type1"), NameObject("/BaseFont"): NameObject("/Helvetica")})
+        page[NameObject("/Resources")] = DictionaryObject({NameObject("/Font"): DictionaryObject({NameObject("/F1"): pdf._add_object(font)})})
+        stream = DecodedStreamObject()
+        stream.set_data(b"BT /F1 12 Tf 20 200 Td (Artificial Confidential ALPHA) Tj ET")
+        page[NameObject("/Contents")] = pdf._add_object(stream)
+        if algorithm:
+            pdf.encrypt(user_password=password, owner_password="artificial-owner-password", algorithm=algorithm)
+        with Path(root, filename).open("wb") as output:
+            pdf.write(output)
+
+
+def _smoke_pdf_checks(results):
+    """Identify fixture outcomes by filename, independent of traversal order."""
+    by_name = {Path(record.path).name: record for record in results}
+    checks = {}
+    for key, filename, _algorithm, _password, readable in _SMOKE_PDF_CASES:
+        record = by_name.get(filename)
+        if readable:
+            checks[key] = bool(record and record.content_status == "complete" and record.matched
+                               and any(match.source == "content" and match.keyword == "ALPHA" for match in record.matches))
+        else:
+            checks[key] = bool(record and record.content_status == "unreadable" and not record.matched)
+    return checks
+
+
 def main():
     parser = argparse.ArgumentParser(description="敏感资料检查")
     parser.add_argument("--demo", action="store_true", help="展示虚构结果，不扫描本机")
@@ -1056,21 +1100,17 @@ def main():
     smoke_result = {"ok": False}
     if args.smoke_test:
         import pypdf
-        from pypdf.generic import DictionaryObject, NameObject, DecodedStreamObject
+        from pypdf._crypt_providers import crypt_provider
         fixture = tempfile.TemporaryDirectory(prefix="file-inspector-smoke-")
-        Path(fixture.name, "人工测试.txt").write_text("这是一份人工生成的内部资料测试文件。", encoding="utf-8")
-        pdf = pypdf.PdfWriter()
-        page = pdf.add_blank_page(width=300, height=300)
-        font = DictionaryObject({NameObject("/Type"): NameObject("/Font"), NameObject("/Subtype"): NameObject("/Type1"), NameObject("/BaseFont"): NameObject("/Helvetica")})
-        page[NameObject("/Resources")] = DictionaryObject({NameObject("/Font"): DictionaryObject({NameObject("/F1"): pdf._add_object(font)})})
-        stream = DecodedStreamObject()
-        stream.set_data(b"BT /F1 12 Tf 20 200 Td (Confidential ALPHA) Tj ET")
-        page[NameObject("/Contents")] = pdf._add_object(stream)
-        with open(Path(fixture.name, "人工测试.pdf"), "wb") as output:
-            pdf.write(output)
-        pdf.encrypt("artificial-test-password")
-        with open(Path(fixture.name, "加密测试.pdf"), "wb") as output:
-            pdf.write(output)
+        try:
+            _create_smoke_fixtures(fixture.name)
+        except Exception as exc:
+            Path(args.smoke_test).write_text(json.dumps({
+                "ok": False, "aes_pdf": False, "crypto_provider": crypt_provider,
+                "error_type": type(exc).__name__, "error": str(exc),
+            }, ensure_ascii=False, indent=2), encoding="utf-8")
+            fixture.cleanup()
+            return 1
         window.add_root(fixture.name)
         window.keywords.setPlainText("内部资料\nALPHA")
 
@@ -1083,7 +1123,8 @@ def main():
                     self.data = data
 
             matched = window.batch_records()
-            window.batch_selection_by_tab[0] = [matched[0].path] if matched else []
+            chosen = next((record for record in matched if Path(record.path).name == "人工测试.txt"), None)
+            window.batch_selection_by_tab[0] = [chosen.path] if chosen else []
             dialog = window.create_batch_dialog()
             selected = dialog.selected_records() if dialog else []
             report_path = Path(fixture.name, "selected-report.json")
@@ -1095,7 +1136,11 @@ def main():
                         and subset["export_scope"]["kind"] == "selected"
                         and len(subset["results"]) == 1
                         and all(Path(record.path).is_file() for record in window.results))
-            smoke_result.update({"ok": window.summary.state == "completed" and window.summary.processed == 3 and window.summary.matched == 2 and window.summary.content_unreadable == 1 and window.table.rowCount() == 2 and batch_ok, "batch_selection": batch_ok, "summary": asdict(window.summary), "pdf_library": pypdf.__version__, "gui_rows": window.table.rowCount(), "results": [asdict(r) for r in window.results]})
+            pdf_checks = _smoke_pdf_checks(window.results)
+            aes_ok = all(pdf_checks[key] for key in ("aes128_empty_password", "aes256_empty_password", "aes256_password_protected"))
+            smoke_result.update({"ok": window.summary.state == "completed" and window.summary.processed == 6 and window.summary.matched == 4 and window.summary.content_complete == 4 and window.summary.content_unreadable == 2 and window.table.rowCount() == 4 and batch_ok and all(pdf_checks.values()), "batch_selection": batch_ok, "aes_pdf": aes_ok, "crypto_provider": crypt_provider, "pdf_checks": pdf_checks, "summary": asdict(window.summary), "pdf_library": pypdf.__version__, "gui_rows": window.table.rowCount(), "results": [asdict(r) for r in window.results]})
+            if dialog:
+                dialog.deleteLater()
             Path(args.smoke_test).write_text(json.dumps(smoke_result, ensure_ascii=False, indent=2), encoding="utf-8")
             app.exit(0 if smoke_result["ok"] else 1)
 

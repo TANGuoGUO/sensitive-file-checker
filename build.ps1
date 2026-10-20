@@ -38,9 +38,9 @@ try {
         throw "app.py was not found in $PSScriptRoot."
     }
     Write-Host "Checking build dependencies with $PythonExecutable ..."
-    & $PythonExecutable @PythonPrefix -c "import os, sys; sys.path.insert(0, os.path.join(os.getcwd(), 'vendor')); import PySide6, pypdf, PyInstaller, pythoncom, pywintypes, win32com.client; print('Build dependencies are available.')"
+    & $PythonExecutable @PythonPrefix "check_build_dependencies.py"
     if ($LASTEXITCODE -ne 0) {
-        throw "Build dependencies are missing. Install them manually: python -m pip install -r requirements.txt"
+        throw "Build dependencies are missing or PDF AES verification failed. Install them manually: python -m pip install -r requirements.txt"
     }
     $Layouts = if ($Layout -eq "both") { @("onefile", "portable") } else { @($Layout) }
     foreach ($CurrentLayout in $Layouts) {
